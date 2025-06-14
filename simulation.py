@@ -62,23 +62,34 @@ class _MCP(Potts_AGG):
         elif shape != self.__shape:
             raise RuntimeError("You provide grains map whose shape is different from the previous one. This is not possible")
 
-        global_id = self._comm.gather(self.local_id)
+        shm_comm = self._comm.Split_type(MPI.COMM_TYPE_SHARED)
+
+        # TODO: Broadcast the image between shared groups
         if self._rank == 0:
             self.spins = value.ngrains
-            for i, local_id in enumerate(global_id):
-                image_chunk = value.image.flatten()[local_id-1].detach().cpu().numpy()
-                if i == 0:
-                    local_image = image_chunk
-                else:
-                    self._comm.send(image_chunk, dest=i, tag=77)
+            flat_image = value.image.flatten().detach()
         else:
-            self.spins = None
-            local_image = self._comm.recv(source=0, tag=77)
+            self.spins = 0
+
+        win = MPI.Win.Allocate_shared(flat_image.nbytes if self._rank == 0 else 0,
+                                      flat_image.itemsize if self._rank == 0 else 0,
+                                      comm=shm_comm)
+        win.Fence()
+        buf, itemsize = win.Shared_query(0)
+        shared_image = torch.frombuffer(buf, dtype=torch.int32)
+
+        if self._rank == 0:
+            shared_image.copy_(flat_image.to('cpu'))
+
+        win.Fence()
+
+        self.local_sites = shared_image[self.local_id - 1] + 1
+
+        win.Fence()
+        win.Free()
+        shm_comm.Free()
 
         self.euler_angle = self._comm.bcast(value.euler_angle.detach().cpu().numpy() if self._rank == 0 else None)
-
-        self.local_sites = local_image + 1
-        self._comm.barrier()
 
 class MCPSimulator:
     def __init__(self, 
