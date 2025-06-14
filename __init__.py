@@ -88,7 +88,7 @@ class Grains(GrainsSeq):
     
 def from_centers(shape: Sequence[int], grain_centers: torch.Tensor, p=2, device="cpu", nchunks = 1) -> Grains:
     image = _gen.generate_grains(shape, grain_centers, p, device, nchunks)
-    euler_angle = _gen.generate_random_euler_angle(grain_centers.shape[0], device)[image]
+    euler_angle = _gen.generate_random_euler_angle(grain_centers.shape[0], device)
     return Grains(image = image, euler_angle = euler_angle)
 
 def concatenate(grains_seqs: list[GrainsSeq]):
@@ -114,12 +114,12 @@ def random(shape: Sequence[int],
 
 def circle(shape: Sequence[int], radius: float, device: torch.device = "cpu") -> Grains:
     image = _gen.generate_circle_grain(shape, radius)
-    euler_angle = _gen.generate_random_euler_angle(2, device)[image]
+    euler_angle = _gen.generate_random_euler_angle(2, device)
     return Grains(image = image, euler_angle = euler_angle)
 
 def square(shape: Sequence[int], side_length: float, device: torch.device = "cpu") -> Grains:
     image = _gen.generate_square_grain(shape, side_length)
-    euler_angle = _gen.generate_random_euler_angle(2, device)[image]
+    euler_angle = _gen.generate_random_euler_angle(2, device)
     return Grains(image = image, euler_angle = euler_angle)
 
 def hexagons(ngrains: int, side_length: float, device: torch.device = "cpu", nchunks = 1) -> Grains:

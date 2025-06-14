@@ -117,7 +117,11 @@ def generate_grains(size: Sequence[int], grain_centers: torch.Tensor, p: int = 2
         nchunks = comm.bcast(nchunks)
 
         grid_coords_chunks = torch.chunk(grid_coords_block, nchunks)
-        image_block = torch.empty((grid_coords_block.shape[0],), dtype=torch.int32)
+        if rank == 0:
+            image_block = torch.empty((grid_coords.shape[0],), dtype=torch.int32)
+        else:
+            image_block = torch.empty((grid_coords_block.shape[0],), dtype=torch.int32)
+
         offset = 0
 
         if rank == 0:
@@ -137,12 +141,19 @@ def generate_grains(size: Sequence[int], grain_centers: torch.Tensor, p: int = 2
             offset += grid_coords_chunk.shape[0]
             comm.send(1,0,111)
 
-        image_blocks = comm.gather(image_block)
-
+        # image_blocks = comm.gather(image_block)
         if rank == 0:
-            image = torch.concatenate(image_blocks).reshape(*size)
+            recvcounts = [block.shape[0] for block in grid_coords_blocks]
+            displs = [0] + list(np.cumsum(recvcounts[:-1]))
+            comm.Gatherv(
+                sendbuf=MPI.IN_PLACE,
+                recvbuf=(image_block, recvcounts, displs, MPI.INT),
+                root=0
+            )
+            image = image_block.reshape(*size)
             thread.join()
         else:
+            comm.Gatherv(image_block, None, 0)
             image = None
                 
         # else:

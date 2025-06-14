@@ -16,60 +16,22 @@ class Simulator(Potts_AGG):
         self.command("stats", 10)
 
         self.__shape = None
-
-    # def __generate_initial_condition(self, image, euler_angle, filename):
-    #     '''
-    #     Takes an image of grain IDs (and euler angles assigned to each ID) and writes it to an init file for a SPPARKS simulation
-    #     The initial condition file is written to the 2D or 3D file based on the dimension of 'img'
-        
-    #     Inputs:
-    #         img (numpy, integers): pixels indicate the grain ID of the grain it belongs to
-    #         euler_angke (numpy): number of grains by three Euler angles
-    #     '''
-
-    #     # Set local variables
-    #     size = image.shape
-    #     dim = len(image.shape)
-    #     with open(filename, 'w') as file:
-    #         file.write(" # This line is ignored\nValues\n\n")
-    #         # Write the information in the SPPARKS format and save the file
-            
-    #         k=0
-        
-    #         if dim==3: 
-    #             for i in range(0,size[2]):
-    #                 for j in range(0,size[1]):
-    #                     for h in range(0,size[0]):
-    #                         site_id = int(image[h,j,i])
-    #                         file.write(f"{k+1} {site_id+1} {euler_angle[i,j,h,0]} {euler_angle[i,j,h,1]} {euler_angle[i,j,h,2]}\n")
-    #                         k = k + 1
-            
-    #         else:
-    #             for i in range(0,size[1]):
-    #                 for j in range(0,size[0]):
-    #                     site_id = int(image[j,i])
-    #                     file.write(f"{k+1} {site_id+1} {euler_angle[i,j,0]} {euler_angle[i,j,1]} {euler_angle[i,j,2]}\n")
-    #                     k = k + 1
-    #         os.fsync(file.fileno())
     
     @property
     def grains(self) -> Grains:
         global_sites = self._comm.gather(self.local_sites)
-        global_darray = self._comm.gather(self.local_darray)
         global_id = self._comm.gather(self.local_id)
         
         if self._rank == 0:
             image = np.concatenate(global_sites)
-            euler_angle = np.hstack(global_darray).transpose()
             id = np.concatenate(global_id)
 
             sort_id = np.argsort(id)
             image = image[sort_id]
-            euler_angle = euler_angle[sort_id]
 
             image = image.reshape(self.__shape)
-            euler_angle = euler_angle.reshape((*self.__shape, 3))
-            grains = Grains(image = torch.from_numpy(image), euler_angle = torch.from_numpy(euler_angle))
+            # print(len(np.unique(euler_angle, axis=0)), len(np.unique(image)))
+            grains = Grains(image = torch.from_numpy(image), euler_angle = torch.from_numpy(self.euler_angle.copy()))
             return grains
 
         return None
@@ -102,18 +64,15 @@ class Simulator(Potts_AGG):
             self.spins = value.ngrains
             for i, local_id in enumerate(global_id):
                 image_chunk = value.image.flatten()[local_id-1].detach().cpu().numpy()
-                euler_angle_chunk = value.euler_angle.reshape(-1, 3)[local_id-1].detach().cpu().numpy()
                 if i == 0:
                     local_image = image_chunk
-                    local_euler_angle = euler_angle_chunk
                 else:
                     self._comm.send(image_chunk, dest=i, tag=77)
-                    self._comm.send(euler_angle_chunk, dest=i, tag=78)
         else:
             self.spins = None
             local_image = self._comm.recv(source=0, tag=77)
-            local_euler_angle = self._comm.recv(source=0, tag=78)
+
+        self.euler_angle = self._comm.bcast(value.euler_angle.detach().cpu().numpy() if self._rank == 0 else None)
 
         self.local_sites = local_image + 1
-        self.local_darray = local_euler_angle.transpose()
         self._comm.barrier()
