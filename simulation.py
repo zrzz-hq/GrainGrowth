@@ -92,4 +92,6 @@ class Simulator(Potts_AGG):
         win.Fence()
         win.Free()
 
-        self.euler_angle = self._comm.bcast(value.euler_angle.detach().cpu().numpy() if self._rank == 0 else None)
+        if self._rank == 0:
+            self.euler_angle = value.euler_angle.detach().cpu().numpy()
+        self._comm.barrier()
