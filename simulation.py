@@ -11,7 +11,7 @@ import traceback
 class _MCP(Potts_AGG):
     def __init__(self, spparks: SPPARKS, *args):
         super().__init__(spparks, args)
-        
+
         self.__shm_comm = self._comm.Split_type(MPI.COMM_TYPE_SHARED)
         self.__shape = None
 
@@ -101,7 +101,10 @@ class _MCP(Potts_AGG):
         win.Fence()
         win.Free()
 
-        self.euler_angle = self._comm.bcast(value.euler_angle.detach().cpu().numpy() if self._rank == 0 else None)
+        if self._rank == 0:
+            self.euler_angle = value.euler_angle.detach().cpu().numpy()
+        self._comm.barrier()
+
 
 class MCPSimulator:
     def __init__(self, 
