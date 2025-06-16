@@ -13,6 +13,7 @@ class _MCP(Potts_AGG):
         super().__init__(spparks, args)
 
         self.__shm_comm = self._comm.Split_type(MPI.COMM_TYPE_SHARED)
+        self.__shm_leaders = self._comm.Split(0 if self.__shm_comm.rank == 0 else MPI.UNDEFINED, self._rank)
         self.__shape = None
 
     @property
@@ -27,33 +28,38 @@ class _MCP(Potts_AGG):
     @property
     def grains(self) -> Grains:
 
-
-        # global_sites = self._comm.gather(self.local_sites)
-        # global_id = self._comm.gather(self.local_id)
-
         local_sites = self.local_sites
 
-        if self._rank == 0 and self.__shape == None:
+        if self.__shape == None:
             self.__shape = self.shape
 
-        win = MPI.Win.Allocate_shared(math.prod(self.__shape) * local_sites.itemsize if self._rank == 0 else 0,
-                                      local_sites.itemsize if self._rank == 0 else 0,
+        win = MPI.Win.Allocate_shared(math.prod(self.__shape) * local_sites.itemsize if self.__shm_comm.rank == 0 else 0,
+                                      local_sites.itemsize if self.__shm_comm.rank == 0 else 0,
                                       comm=self.__shm_comm)
+        
         win.Fence()
         buf, itemsize = win.Shared_query(0)
         shared_image = np.frombuffer(buf, dtype=np.int32)
+        if self.__shm_comm.rank == 0:
+            shared_image.fill(0)
+        win.Fence()
+        
         shared_image[self.local_id - 1] = local_sites
 
         win.Fence()
-        if self._rank == 0:
-            
-            image = shared_image.copy().reshape(self.__shape)
+        if self.__shm_comm.rank == 0:
+            image = self.__shm_leaders.reduce(shared_image, MPI.MAX).reshape(self.__shape)
+        else:
+            image = None
 
         win.Fence()
         win.Free()
         
         if self._rank == 0:
-            grains = Grains(image = torch.from_numpy(image), euler_angle = torch.from_numpy(self.euler_angle.copy()))
+            if self.__shape == None:
+                self.__shape = self.shape
+            
+            grains = Grains(image = torch.from_numpy(image.reshape(self.__shape)), euler_angle = torch.from_numpy(self.euler_angle.copy()))
             return grains
 
         return None
@@ -77,21 +83,21 @@ class _MCP(Potts_AGG):
             raise RuntimeError("You provide grains map whose shape is different from the previous one. This is not possible")
 
 
-        # TODO: Broadcast the image between shared groups
-        if self._rank == 0:
-            self.spins = value.ngrains
-            flat_image = value.image.flatten().detach().cpu().numpy()
-        else:
-            self.spins = 0
+        self.spins = value.ngrains if self._rank == 0 else 0
 
-        win = MPI.Win.Allocate_shared(flat_image.nbytes if self._rank == 0 else 0,
-                                      flat_image.itemsize if self._rank == 0 else 0,
+        if self.__shm_comm.rank == 0:
+            flat_image = self.__shm_leaders.bcast(value.image.flatten().detach().cpu().numpy() if self._rank == 0 else None)
+        else:
+            flat_image = None
+
+        win = MPI.Win.Allocate_shared(flat_image.nbytes if self.__shm_comm.rank == 0 else 0,
+                                      flat_image.itemsize if self.__shm_comm.rank == 0 else 0,
                                       comm=self.__shm_comm)
         win.Fence()
         buf, itemsize = win.Shared_query(0)
         shared_image = np.frombuffer(buf, dtype=np.int32)
 
-        if self._rank == 0:
+        if self.__shm_comm.rank == 0:
             shared_image[:] = flat_image
 
         win.Fence()
