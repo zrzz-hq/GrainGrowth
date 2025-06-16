@@ -74,7 +74,7 @@ class Grains(GrainsSeq):
     
     @property
     def ngrains(self) -> int:
-        return len(np.unique(self._image_list[0])) if len(self._image_list) > 0 else 0
+        return self._euler_angle_list[0].shape[0] if len(self._image_list) > 0 else 0
     
     @property
     def shape(self) -> tuple:
@@ -83,6 +83,14 @@ class Grains(GrainsSeq):
     @property
     def energy(self) -> torch.Tensor:
         return self.energies[0]
+
+    def grain_area(self, id: int) -> int:
+        return (self._image_list[0] == id).sum().item()
+    
+    @property
+    def all_grains_area(self) -> torch.Tensor:
+        return torch.bincount(self._image_list[0].flatten(), minlength=self.ngrains)
+    
 
     
     
