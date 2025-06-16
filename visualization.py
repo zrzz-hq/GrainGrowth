@@ -1,39 +1,26 @@
 from . import GrainsSeq
 
-import cv2
 import numpy as np
-from pathlib import Path
-from typing import Sequence, Union
 from tqdm import tqdm
+import matplotlib
+import imageio
 
-import matplotlib.pyplot as plt
+def make_video(grains_seq: GrainsSeq, filename: str, fps: int = 10, cmap: str='viridis'):
+    images = grains_seq.images  # torch.Tensor [N, H, W]
 
-def make_video(
-    grains_seq: GrainsSeq,
-    output_path: Union[str, Path],
-    fps: int = 10,
-    codec: str = 'mp4v',
-    cmap = 'viridis'
-):
-    # Load first frame to determine resolution
-    first = grains_seq[0].image
-    height, width = first.shape[:2]
+    ims_merge = []
+    for img in tqdm(images, desc="Making video"):
+        # Convert to numpy
+        np_img = img.detach().cpu().numpy()
 
-    # Initialize video writer
-    fourcc = cv2.VideoWriter.fourcc(*codec)
-    video = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+        # Optional: normalize to [0, 1]
+        np_img = (np_img - np_img.min()) / (np_img.ptp() + 1e-8)
 
-    for image in grains_seq.images:
-        fig, ax = plt.subplots()
-        cax = ax.matshow(image, cmap=cmap)
-        fig.canvas.draw()
-        
-        frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        # Apply colormap and convert to RGB uint8
+        colored = matplotlib.colormaps[cmap](np_img)[:, :, :3]  # Drop alpha channel
+        colored = (colored * 255).astype(np.uint8)
 
-        video.write(frame)
+        ims_merge.append(colored)
 
-        plt.close(fig)
-
-    video.release()
-    print(f"Video saved to {output_path}")
+    # Save as mp4 and gif
+    imageio.mimsave(filename, ims_merge, fps=fps)
