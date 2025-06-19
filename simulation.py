@@ -43,14 +43,9 @@ class Simulator(Potts_AGG):
         if self.__shape == None:
             self.__shape = shape
 
-            bcs = np.array(['p', 'p', 'p'])
             dim = len(self.__shape)
             size = np.array([*self.__shape] + [1] * (3 - dim))
-            size = size - 0.5*(bcs=='n')*(size!=1)
 
-            self.dimension = dim
-            self.command("boundary", *bcs)
-            self.command("lattice", 'sq/8n' if dim==2 else 'sc/26n', 1.0)
             self.command("region", "box", "block", 0, size[0], 0, size[1], 0, size[2])
 
             self.create_box("box")
