@@ -4,12 +4,13 @@ import numpy as np
 import imageio
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-from tqdm import tqdm
 from threading import Thread
 
+from mpi4py import MPI
 import torch
+from tqdm import tqdm
+import itertools
 
 def build_label_cmap(max_id, base_cmap='viridis'):
     """
@@ -27,7 +28,7 @@ def grains_frame_to_rgb_labels(img_tensor, cmap, norm):
     """
     Convert a [H, W] integer-label torch.Tensor to a [H, W, 3] uint8 RGB array.
     """
-    labels = img_tensor.cpu().numpy().astype(int)
+    labels = img_tensor
     rgba = cmap(norm(labels))        # floats in [0..1], shape (H, W, 4)
     rgb  = (rgba[..., :3] * 255).astype(np.uint8)
     return rgb
@@ -95,55 +96,58 @@ def draw_textured_cube_to_array_face_rgbs(face_rgbs):
     plt.close(fig)
     return arr[..., :3]  # drop alpha
 
-def split_list(lst, n):
-    """
-    Split a list `lst` into `n` contiguous chunks, distributing the remainder
-    one item at a time to the first chunks.
-
-    Args:
-        lst (list): The list to split.
-        n (int): Number of chunks.
-
-    Returns:
-        List[List]: A list of `n` sublists whose concatenation is `lst`.
-                    If len(lst) < n, later chunks may be empty.
-    """
-    if n <= 0:
-        raise ValueError("n must be a positive integer")
-    length = len(lst)
-    chunk_size, rem = divmod(length, n)
-    chunks = []
-    start = 0
-    for i in range(n):
-        end = start + chunk_size + (1 if i < rem else 0)
-        chunks.append(lst[start:end])
-        start = end
-    return chunks
-
 def make_video(grains_seq: GrainsSeq, filename: str, base_cmap='viridis', fps: int = 10):
     """
     Build a consistent label-colormap over all frames, then render each
     frame (2D label map or 3D volume) to RGB and save as video.
     """
 
-    # 1) find global max label
-    ngrains = grains_seq._euler_angle_list[0].shape[0]
-    # 2) build shared cmap & norm
-    cmap, norm = build_label_cmap(ngrains - 1, base_cmap)
+    comm = MPI.COMM_WORLD
 
-    frames = []
-    for img in tqdm(grains_seq._image_list, desc="Making video"):
+    if comm.rank == 0:
+        # 1) find global max label
+        ngrains = grains_seq._euler_angle_list[0].shape[0]
+        # 2) build shared cmap & norm
+        cmap, norm = build_label_cmap(ngrains - 1, base_cmap)
+        images = torch.stack(grains_seq._image_list).cpu().numpy()
+        images_chunks = np.array_split(images, comm.size)
+    else:
+        cmap = norm = None
+        images_chunks = None
+
+    cmap = comm.bcast(cmap)
+    norm = comm.bcast(norm) 
+    local_images = comm.scatter(images_chunks)
+
+    if comm.rank == 0:
+        def update_progress():
+            pbar = tqdm(total=len(grains_seq), desc="Making video")
+            total = 0
+            while total < len(grains_seq):
+                pbar.update(comm.recv(tag=112))
+                total += 1
+
+        thread = Thread(target=update_progress)
+        thread.start()
+
+    local_frames = []
+    for img in local_images:
         if img.ndim == 2:
             # 2D: simple label → rgb
             rgb = grains_frame_to_rgb_labels(img, cmap, norm)
-            frames.append(rgb)
+            local_frames.append(rgb)
         elif img.ndim == 3:
             # 3D: extract faces, convert each, then cube‐map
             faces = extract_cube_faces(img)
             face_rgbs = [grains_frame_to_rgb_labels(f, cmap, norm) for f in faces]
             cube_img = draw_textured_cube_to_array_face_rgbs(face_rgbs)
-            frames.append(cube_img)
+            local_frames.append(cube_img)
         else:
             raise ValueError(f"Unsupported ndim={img.ndim}")
         
-    imageio.mimsave(filename, frames, fps=fps)
+        comm.send(1,0,112)
+        
+    frames = comm.gather(local_frames)
+
+    if comm.rank == 0:   
+        imageio.mimsave(filename, list(itertools.chain.from_iterable(frames)), fps=fps)

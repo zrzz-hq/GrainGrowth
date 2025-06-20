@@ -28,7 +28,7 @@ def save(file: str, dataset: GrainsDataSet):
     images_list = []
     euler_angles_list = []
 
-    for grain_seq in dataset:
+    for grain_seq in tqdm(dataset, desc="Saving dataset"):
         images_list.append(grain_seq.images)
         euler_angles_list.append(grain_seq.euler_angles)
 
@@ -44,28 +44,28 @@ def save(file: str, dataset: GrainsDataSet):
         raise RuntimeError(f"Unsupported file format {suffix}")
 
 def load(file: str, device: torch.device = "cpu"):
-    euler_angles_data = None
-    images_data = None
 
     filepath = Path(file)
     suffix = filepath.suffix
     if suffix == '.h5':
         with h5py.File(file, 'r') as f:
-            images_data = np.array(f["images"])
-            euler_angles_data = np.array(f["euler_angles"])
+            images_set = np.array(f["images"])
+            euler_angles_set = np.array(f["euler_angles"])
     elif suffix == '.pickle':
         with open(file, 'rb') as f:
             data = pickle.load(file)
-            images_data = data[0]
-            euler_angles_data = data[1]
+            images_set = data[0]
+            euler_angles_set = data[1]
     else:
         raise RuntimeError(f"Unsupported file format {suffix}")
     
-    images = torch.from_numpy(images_data).to(device)
-    euler_angles = torch.from_numpy(euler_angles_data).to(device)
+    images_set = torch.from_numpy(images_set).to(device)
+    euler_angles_set = torch.from_numpy(euler_angles_set).to(device)
 
     grains_seq_list = []
-    for images, euler_angles in zip(list(images), list(euler_angles)):
+    pbar = tqdm(total=len(images_set), desc="Loading dataset")
+    for images, euler_angles in zip(list(images_set), list(euler_angles_set)):
         grains_seq_list.append(GrainsSeq(image_list = list(images), euler_angle_list = list(euler_angles)))
+        pbar.update(1)
     
     return GrainsDataSet(grains_seq_list)
