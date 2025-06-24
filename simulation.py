@@ -16,6 +16,15 @@ class Simulator(Potts_AGG):
         self.command("stats", 10)
 
         self.__shape = None
+
+    @property
+    def shape(self) -> list[int]:
+        xlo, xhi, ylo, yhi, zlo, zhi = self.box
+        x = int(xhi - xlo)
+        y = int(yhi - ylo)
+        z = int(zhi - zlo)
+        value = [x,y,z][:self.dimension]
+        return tuple(value)
     
     @property
     def grains(self) -> Grains:
@@ -28,6 +37,9 @@ class Simulator(Potts_AGG):
 
             sort_id = np.argsort(id)
             image = image[sort_id]
+
+            if self.__shape == None:
+                self.__shape = self.shape
 
             image = image.reshape(self.__shape)
             # print(len(np.unique(euler_angle, axis=0)), len(np.unique(image)))
