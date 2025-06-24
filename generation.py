@@ -5,6 +5,7 @@ from typing import Sequence
 import torch.distributed as dist
 from mpi4py import MPI
 from threading import Thread
+import math
 
 def _generate_random_grain_centers(size: Sequence[int], ngrains: int, device: torch.device = "cpu"):
     with torch.device(device):
@@ -80,81 +81,146 @@ def _generate_hex_grain_centers(ngrains, side_length, device = "cpu"):
 #     image, euler_angle = generate_grains(size, grain_centers)
 #     return image, euler_angle, grain_centers
 
+from mpi4py import MPI
+import numpy as np
+import torch
+from threading import Thread
+from tqdm import tqdm
+from typing import Sequence
+
+def _generate_grains_cpu(size: Sequence[int],
+                         grain_centers: torch.Tensor,
+                         p: int,
+                         nchunks: int):
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    nprocs = comm.Get_size()
+
+    # ─── build shifts & grid_coords on rank 0 ────────────────────────────────
+    if rank == 0:
+        dim = len(size)
+        ngrains = grain_centers.shape[0]
+        size_tensor = torch.tensor(size, dtype=torch.float32)
+
+        shifts = torch.cartesian_prod(
+            *[torch.tensor([-1,0,1],dtype=torch.float32) for _ in range(dim)]
+        ).reshape(dim, -1).T              # (3^D, D)
+
+        shifted_centers = (
+            grain_centers[None] +
+            shifts[:,None,:] * size_tensor
+        ).reshape(-1, dim)               # (3^D·N, D)
+
+        ref = [torch.arange(n,dtype=torch.float32) for n in size]
+        grid_coords = torch.cartesian_prod(*ref)  # (∏size, D)
+    else:
+        grid_coords     = None
+        shifted_centers = None
+        ngrains         = None
+        dim             = None
+        size            = None
+
+    # ─── share parameters ────────────────────────────────────────────────────
+    shifted_centers = comm.bcast(shifted_centers, root=0)
+    ngrains         = comm.bcast(ngrains,         root=0)
+    nchunks         = comm.bcast(nchunks,         root=0)
+    size            = comm.bcast(size,            root=0)
+    dim             = comm.bcast(dim,             root=0)
+
+    # ─── divide work for grid_coords ─────────────────────────────────────────
+    # we’ll reuse the same divmod logic you had; start‐offset in “elements”
+    npts = math.prod(size)
+    quot, rem      = divmod(npts, nprocs)
+    nlocal_pts  = quot + (1 if rank < rem else 0)
+    pts_disp    = quot * rank + min(rank, rem)  # in “rows”
+
+    # print(f"rank {rank} grains {nlocal_pts} disp {pts_disp}")
+
+    # ─── window for grid_coords ─────────────────────────────────────────────
+    # root exposes torch → MPI buffer
+    win_gc = MPI.Win.Create(
+        grid_coords if rank==0 else None,
+        grid_coords.element_size() if rank==0 else 1,
+        MPI.INFO_NULL, comm
+    )
+    win_gc.Fence()
+    if rank == 0:
+        grid_coords_block = grid_coords[:nlocal_pts]
+    else:
+        grid_coords_block = torch.empty((nlocal_pts, dim), dtype=torch.float32)
+
+        win_gc.Get(
+            [grid_coords_block, MPI.FLOAT],
+            0,
+            pts_disp * dim,
+        )
+    win_gc.Fence()
+    win_gc.Free()
+
+    # ─── build image_block locally ──────────────────────────────────────────
+    grid_chunks = torch.chunk(grid_coords_block, nchunks)
+    image_block = torch.empty((nlocal_pts,), dtype=torch.int32)
+    offset = 0
+
+    if rank == 0:
+        def prog():
+            pbar = tqdm(total=nprocs*nchunks, desc="Generating")
+            done = 0
+            while done < nprocs*nchunks:
+                comm.recv(tag=111)
+                pbar.update(1)
+                done += 1
+        th = Thread(target=prog)
+        th.start()
+
+    for chunk in grid_chunks:
+        d = torch.cdist(shifted_centers, chunk, p=p)
+        sel = torch.argmin(d, dim=0) % ngrains
+        image_block[offset:offset+chunk.shape[0]] = sel
+        offset += chunk.shape[0]
+        comm.send(None, dest=0, tag=111)
+
+    if rank == 0:
+        th.join()
+
+    # ─── window for the final image ──────────────────────────────────────────
+    if rank == 0:
+        # allocate the full buffer on root
+        image = torch.empty((npts,), dtype=torch.int32)
+    else:
+        image = None
+
+    win_img = MPI.Win.Create(
+        image if rank==0 else None,
+        image_block.element_size() if rank==0 else 1,
+        MPI.INFO_NULL, comm
+    )
+    win_img.Fence()
+    
+    if rank == 0:
+        image[:nlocal_pts] = image_block
+    else:
+        win_img.Put(
+            [image_block, MPI.INT],
+            0,
+            pts_disp,         # rows offset
+        )
+
+    win_img.Fence()
+    win_img.Free()
+
+    # ─── only root returns the final reshaped image ─────────────────────────
+    if rank == 0:
+        return image.reshape(*size)
+    else:
+        return None
+
 
 def generate_grains(size: Sequence[int], grain_centers: torch.Tensor, p: int = 2, device: torch.device = "cpu", nchunks = 1):          
     
-    with torch.device(device):
-
-        comm = MPI.COMM_WORLD
-        rank = comm.Get_rank()
-        nprocs = comm.Get_size()
-
-        if rank == 0:
-            dim = len(size)
-            ngrains = grain_centers.shape[0]
-            size_tensor = torch.tensor(size, dtype=torch.float32)
-
-            # Generate shift grid: all combinations of [-1, 0, 1] in D dimensions
-            shifts = torch.cartesian_prod(*[torch.tensor([-1, 0, 1], dtype=torch.float32) for _ in range(dim)])
-            shifts = shifts.reshape(dim, -1).T  # shape (3^D, D)
-
-            # Broadcast and compute shifted centers
-            shifted_centers = grain_centers[None, :, :] + shifts[:, None, :] * size_tensor  # (3^D, N, D)
-            shifted_centers = shifted_centers.reshape(-1, shifted_centers.shape[-1])
-
-            # Create a grid of all coordinates in the domain
-            ref = [torch.arange(n, dtype=torch.float32) for n in size]
-            grid_coords = torch.cartesian_prod(*ref)
-            grid_coords_blocks = torch.chunk(grid_coords, nprocs)
-        else:
-            grid_coords_blocks = None
-            shifted_centers = None
-            ngrains = None
-
-        grid_coords_block = comm.scatter(grid_coords_blocks)
-        shifted_centers = comm.bcast(shifted_centers)
-        ngrains = comm.bcast(ngrains)
-        nchunks = comm.bcast(nchunks)
-
-        grid_coords_chunks = torch.chunk(grid_coords_block, nchunks)
-        if rank == 0:
-            image_block = torch.empty((grid_coords.shape[0],), dtype=torch.int32)
-        else:
-            image_block = torch.empty((grid_coords_block.shape[0],), dtype=torch.int32)
-
-        offset = 0
-
-        if rank == 0:
-            def update_progress():
-                pbar = tqdm(total=nprocs*nchunks, desc="Generating")
-                total = 0
-                while total < nprocs*nchunks:
-                    pbar.update(comm.recv(tag=111))
-                    total += 1
-
-            thread = Thread(target=update_progress)
-            thread.start()
-
-        for grid_coords_chunk in grid_coords_chunks:
-            dist_chunk = torch.cdist(shifted_centers, grid_coords_chunk, p=p)
-            image_block[offset : offset + grid_coords_chunk.shape[0]] = torch.argmin(dist_chunk, dim=0) % ngrains
-            offset += grid_coords_chunk.shape[0]
-            comm.send(1,0,111)
-
-        # image_blocks = comm.gather(image_block)
-        if rank == 0:
-            recvcounts = [block.shape[0] for block in grid_coords_blocks]
-            displs = [0] + list(np.cumsum(recvcounts[:-1]))
-            comm.Gatherv(
-                sendbuf=MPI.IN_PLACE,
-                recvbuf=(image_block, recvcounts, displs, MPI.INT),
-                root=0
-            )
-            image = image_block.reshape(*size)
-            thread.join()
-        else:
-            comm.Gatherv(image_block, None, 0)
-            image = None
+    if device == "cpu":
+        return _generate_grains_cpu(size, grain_centers, p, nchunks)
+        
                 
         # else:
         #     #SETUP AND EDIT LOCAL VARIABLES
@@ -187,5 +253,3 @@ def generate_grains(size: Sequence[int], grain_centers: torch.Tensor, p: int = 2
             # image = image.reshape(*size)
 
         # Assign each point to its nearest center, then reduce ID modulo to map to original grains
-
-        return image
