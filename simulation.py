@@ -1,20 +1,16 @@
 from . import Grains
 from SPPARKS.python.Apps import Potts_AGG
-from SPPARKS.python import SPPARKS
+from SPPARKS.python import SPPARKS, open
 import numpy as np
 import torch
 import os
+from mpi4py import MPI
 
-class Simulator(Potts_AGG):
+import traceback
+
+class _MCP(Potts_AGG):
     def __init__(self, spparks: SPPARKS, *args):
         super().__init__(spparks, args)
-
-        self.command("diag_style", "energy")
-        self.command("sweep", "random")
-        self.command("sector", "yes")
-        self.command("energy_scaling", 1)
-        self.command("stats", 10)
-
         self.__shape = None
 
     @property
@@ -58,7 +54,7 @@ class Simulator(Potts_AGG):
             dim = len(self.__shape)
             size = np.array([*self.__shape] + [1] * (3 - dim))
 
-            self.command("region", "box", "block", 0, size[0], 0, size[1], 0, size[2])
+            self.region("box", "block", 0, size[0], 0, size[1], 0, size[2])
 
             self.create_box("box")
             self.create_sites("box")
@@ -83,3 +79,52 @@ class Simulator(Potts_AGG):
 
         self.local_sites = local_image + 1
         self._comm.barrier()
+
+class MCPSimulator:
+    def __init__(self, 
+                 init_grains: Grains, 
+                 lattice = "sq/8n", 
+                 cutoff = 0.0, 
+                 temperature = 0.66, 
+                 osym = 24, 
+                 rseed = 10000,
+                 nsteps = None):
+        
+        self.__nsteps = nsteps
+        self.__comm = MPI.COMM_WORLD
+        self.__spk = open(self.__comm)
+        self.__spk.__enter__()
+
+        self.__app = _MCP(self.__spk, osym)
+        self.__spk.command("diag_style", "energy")
+        self.__spk.command("sweep", "random")
+        self.__spk.command("sector", "yes")
+        self.__spk.command("energy_scaling", 1)
+        self.__spk.command("stats", 10)
+
+
+        self.__app.dimension = len(init_grains.shape) if self.__comm.rank == 0 else None
+        self.__app.boundary('p', 'p', 'p')
+        self.__app.lattice(lattice, 1.0)
+        self.__app.cutoff = cutoff
+        self.__app.temperature = temperature
+        self.__app.seed(rseed)
+
+        self.__app.grains = init_grains if self.__comm.rank == 0 else None
+
+    def __enter__(self):
+        def grains_generator():
+            i = 0
+            while self.__nsteps == None or i < self.__nsteps:
+                self.__app.run(1, post=False, pre=(i==0))
+                i += 1
+                yield self.__app.grains
+        
+        return grains_generator()
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            print(f"[Rank {self.__comm.rank}] Exception occurred in with block: {exc_type.__name__}: {exc_val}")
+            traceback.print_exception(exc_type, exc_val, exc_tb)
+
+        self.__spk.__exit__(exc_type, exc_val, exc_tb)
