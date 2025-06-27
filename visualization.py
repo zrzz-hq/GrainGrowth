@@ -1,18 +1,17 @@
-from . import GrainsSeq
+from . import GrainsSeq, Grains
 
 import numpy as np
 import imageio
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-from threading import Thread
+from tqdm import tqdm
 
 from mpi4py import MPI
-import torch
-from tqdm import tqdm
+from mpi4py.futures import MPICommExecutor
 import itertools
 
-def build_label_cmap(max_id, base_cmap='viridis'):
+def _build_cmap(max_id, base_cmap='viridis'):
     """
     Create a discrete colormap & norm that maps integer labels [0..max_id]
     to distinct colors.
@@ -24,16 +23,15 @@ def build_label_cmap(max_id, base_cmap='viridis'):
     )
     return cmap, norm
 
-def grains_frame_to_rgb_labels(img_tensor, cmap, norm):
+def _draw_2d_grains(image, cmap, norm):
     """
     Convert a [H, W] integer-label torch.Tensor to a [H, W, 3] uint8 RGB array.
     """
-    labels = img_tensor
-    rgba = cmap(norm(labels))        # floats in [0..1], shape (H, W, 4)
+    rgba = cmap(norm(image))        # floats in [0..1], shape (H, W, 4)
     rgb  = (rgba[..., :3] * 255).astype(np.uint8)
     return rgb
 
-def extract_cube_faces(volume_tensor):
+def _extract_cube_faces(volume_tensor):
     """
     Given a 3D torch.Tensor of shape [D, H, W], return a list of its six
     boundary faces (each a [H, W] or [D, W] or [D, H] tensor) in order:
@@ -49,12 +47,15 @@ def extract_cube_faces(volume_tensor):
         volume_tensor[:, :,  -1],   # right
     ]
 
-def draw_textured_cube_to_array_face_rgbs(face_rgbs):
+def _draw_3d_grains(image, cmap, norm):
     """
     Given 6 face RGB arrays (uint8) in the order:
     [front, back, bottom, top, left, right],
     render them onto the 6 faces of a unit cube and return the RGB image.
     """
+    faces = _extract_cube_faces(image)
+    face_rgbs = [_draw_2d_grains(f, cmap, norm) for f in faces]
+
     # assume each face_rgbs[i] has shape (H, W, 3)
     H, W, _ = face_rgbs[0].shape
     u = np.linspace(0, 1, W)
@@ -96,58 +97,59 @@ def draw_textured_cube_to_array_face_rgbs(face_rgbs):
     plt.close(fig)
     return arr[..., :3]  # drop alpha
 
-def make_video(grains_seq: GrainsSeq, filename: str, base_cmap='viridis', fps: int = 10):
+def _draw(image, cmap, norm):
+    if image.ndim == 2:
+        # 2D: simple label → rgb
+        return _draw_2d_grains(image, cmap, norm)
+    elif image.ndim == 3:
+        # 3D: extract faces, convert each, then cube‐map
+        return _draw_3d_grains(image, cmap, norm)
+    
+    return None
+
+def draw(grains: Grains, color_map='viridis'):
+    ngrains = grains.ngrains
+    cmap, norm = _build_cmap(grains.ngrains - 1, color_map)
+    return _draw(grains.image.cpu().numpy(), cmap, norm)
+
+def draw_sequence(grains_seq: GrainsSeq, base_cmap='viridis'):
+    comm = MPI.COMM_WORLD
+
+    if comm.rank == 0:
+        ngrains = grains_seq._euler_angle_list[0].shape[0]
+        cmap, norm = _build_cmap(ngrains - 1, base_cmap)
+
+        if comm.size == 1:
+            frames = []
+            for image in tqdm(grains_seq._image_list, desc="Making Video"):
+                frames.append(_draw(image.cpu().numpy(), cmap, norm))
+        else:
+            # rank 0 acts as the “client”/manager
+            with MPICommExecutor(comm) as executor:
+                # submit a single job
+                results = executor.map(_draw, 
+                                        [image.cpu().numpy() for image in grains_seq._image_list],
+                                        itertools.repeat(cmap),
+                                        itertools.repeat(norm))
+                frames = [r for r in tqdm(results, 
+                                            total=len(grains_seq._image_list),
+                                            desc="Making Video")]
+                
+        return frames
+    else:
+        # non-root ranks simply block on incoming tasks
+        with MPICommExecutor(comm):
+            pass
+
+        return None
+
+def make_video(grains_seq: GrainsSeq, filename: str, color_map='viridis', fps: int = 10):
     """
     Build a consistent label-colormap over all frames, then render each
     frame (2D label map or 3D volume) to RGB and save as video.
     """
-
-    comm = MPI.COMM_WORLD
-
-    if comm.rank == 0:
-        # 1) find global max label
-        ngrains = grains_seq._euler_angle_list[0].shape[0]
-        # 2) build shared cmap & norm
-        cmap, norm = build_label_cmap(ngrains - 1, base_cmap)
-        images = torch.stack(grains_seq._image_list).cpu().numpy()
-        images_chunks = np.array_split(images, comm.size)
-    else:
-        cmap = norm = None
-        images_chunks = None
-
-    cmap = comm.bcast(cmap)
-    norm = comm.bcast(norm) 
-    local_images = comm.scatter(images_chunks)
-
-    if comm.rank == 0:
-        def update_progress():
-            pbar = tqdm(total=len(grains_seq), desc="Making video")
-            total = 0
-            while total < len(grains_seq):
-                pbar.update(comm.recv(tag=112))
-                total += 1
-
-        thread = Thread(target=update_progress)
-        thread.start()
-
-    local_frames = []
-    for img in local_images:
-        if img.ndim == 2:
-            # 2D: simple label → rgb
-            rgb = grains_frame_to_rgb_labels(img, cmap, norm)
-            local_frames.append(rgb)
-        elif img.ndim == 3:
-            # 3D: extract faces, convert each, then cube‐map
-            faces = extract_cube_faces(img)
-            face_rgbs = [grains_frame_to_rgb_labels(f, cmap, norm) for f in faces]
-            cube_img = draw_textured_cube_to_array_face_rgbs(face_rgbs)
-            local_frames.append(cube_img)
-        else:
-            raise ValueError(f"Unsupported ndim={img.ndim}")
+    frames = draw_sequence(grains_seq, color_map)
+    if frames != None:
+        imageio.mimsave(filename, frames, fps=fps)
+    
         
-        comm.send(1,0,112)
-        
-    frames = comm.gather(local_frames)
-
-    if comm.rank == 0:   
-        imageio.mimsave(filename, list(itertools.chain.from_iterable(frames)), fps=fps)
