@@ -88,7 +88,8 @@ class MCPSimulator:
                  temperature = 0.66, 
                  osym = 24, 
                  rseed = 10000,
-                 nsteps = None):
+                 nsteps = None,
+                 method = "normal"):
         
         self.__nsteps = nsteps
         self.__comm = MPI.COMM_WORLD
@@ -102,13 +103,13 @@ class MCPSimulator:
         self.__spk.command("energy_scaling", 1)
         self.__spk.command("stats", 10)
 
-
         self.__app.dimension = len(init_grains.shape) if self.__comm.rank == 0 else None
         self.__app.boundary('p', 'p', 'p')
         self.__app.lattice(lattice, 1.0)
         self.__app.cutoff = cutoff
         self.__app.temperature = temperature
         self.__app.seed(rseed)
+        self.__app.method = method
 
         self.__app.grains = init_grains if self.__comm.rank == 0 else None
 
