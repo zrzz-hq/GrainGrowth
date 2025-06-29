@@ -47,10 +47,15 @@ class _MCP(Potts_AGG):
         shared_image[self.local_id - 1] = local_sites
 
         win.Fence()
-        if self.__shm_comm.rank == 0:
-            image = self.__shm_leaders.reduce(shared_image, MPI.MAX).reshape(self.__shape)
+        if self._rank == 0:
+            image = np.empty(self.__shape, np.int32)
         else:
             image = None
+
+        if self.__shm_comm.rank == 0:
+            self.__shm_leaders.Reduce(shared_image,
+                                    image,
+                                    MPI.MAX)
 
         win.Fence()
         win.Free()
@@ -83,10 +88,10 @@ class _MCP(Potts_AGG):
             raise RuntimeError("You provide grains map whose shape is different from the previous one. This is not possible")
 
 
-        self.spins = value.ngrains if self._rank == 0 else 0
+        self.nspins = value.ngrains if self._rank == 0 else 0
 
         if self.__shm_comm.rank == 0:
-            flat_image = self.__shm_leaders.bcast(value.image.flatten().detach().cpu().numpy() if self._rank == 0 else None)
+            flat_image = self.__shm_leaders.bcast(value.image.flatten().detach().cpu().numpy() if self.__shm_leaders.rank == 0 else None)
         else:
             flat_image = None
 
@@ -107,8 +112,8 @@ class _MCP(Potts_AGG):
         win.Fence()
         win.Free()
 
-        if self._rank == 0:
-            self.euler_angle = value.euler_angle.detach().cpu().numpy()
+        if self.__shm_comm.rank == 0:
+            self.euler_angle = self.__shm_leaders.bcast(value.euler_angle.detach().cpu().numpy() if self.__shm_leaders.rank == 0 else None)
         self._comm.barrier()
 
 
