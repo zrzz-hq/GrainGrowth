@@ -112,17 +112,15 @@ def draw(grains: Grains, color_map='viridis'):
     cmap, norm = _build_cmap(grains.ngrains - 1, color_map)
     return _draw(grains.image.cpu().numpy(), cmap, norm)
 
-def draw_sequence(grains_seq: GrainsSeq, base_cmap='viridis'):
-    comm = MPI.COMM_WORLD
+def draw_sequence(grains_seq: GrainsSeq, color_map='viridis', comm = MPI.COMM_WORLD):
 
     if comm.rank == 0:
         ngrains = grains_seq._euler_angle_list[0].shape[0]
-        cmap, norm = _build_cmap(ngrains - 1, base_cmap)
+        cmap, norm = _build_cmap(ngrains - 1, color_map)
 
         if comm.size == 1:
-            frames = []
-            for image in tqdm(grains_seq._image_list, desc="Making Video"):
-                frames.append(_draw(image.cpu().numpy(), cmap, norm))
+            for image in grains_seq._image_list:
+                yield _draw(image.cpu().numpy(), cmap, norm)
         else:
             # rank 0 acts as the “client”/manager
             with MPICommExecutor(comm) as executor:
@@ -131,25 +129,29 @@ def draw_sequence(grains_seq: GrainsSeq, base_cmap='viridis'):
                                         [image.cpu().numpy() for image in grains_seq._image_list],
                                         itertools.repeat(cmap),
                                         itertools.repeat(norm))
-                frames = [r for r in tqdm(results, 
-                                            total=len(grains_seq._image_list),
-                                            desc="Making Video")]
-                
-        return frames
+                for r in results:
+                    yield r
     else:
         # non-root ranks simply block on incoming tasks
         with MPICommExecutor(comm):
             pass
 
-        return None
+    comm.barrier()
+
 
 def make_video(grains_seq: GrainsSeq, filename: str, color_map='viridis', fps: int = 10):
     """
     Build a consistent label-colormap over all frames, then render each
     frame (2D label map or 3D volume) to RGB and save as video.
     """
-    frames = draw_sequence(grains_seq, color_map)
-    if frames != None:
-        imageio.mimsave(filename, frames, fps=fps)
+    comm = MPI.COMM_WORLD
+
+    if comm.rank == 0:
+        with imageio.get_writer(filename, mode='I', fps=fps) as writer:
+            for frame in tqdm(draw_sequence(grains_seq, color_map, comm), total=len(grains_seq), desc="Making video"):
+                writer.append_data(frame)
+    else:
+        for _ in draw_sequence(None, comm=comm):
+            pass
     
         
