@@ -33,8 +33,10 @@ class _MCP(Potts_AGG):
         if self.__shape == None:
             self.__shape = self.shape
 
+        itemsize = self.__shm_comm.bcast(local_sites.itemsize if self.__shm_comm.rank == 0 else None)
+
         win = MPI.Win.Allocate_shared(math.prod(self.__shape) * local_sites.itemsize if self.__shm_comm.rank == 0 else 0,
-                                      local_sites.itemsize if self.__shm_comm.rank == 0 else 0,
+                                      itemsize,
                                       comm=self.__shm_comm)
         
         win.Fence()
@@ -92,11 +94,13 @@ class _MCP(Potts_AGG):
 
         if self.__shm_comm.rank == 0:
             flat_image = self.__shm_leaders.bcast(value.image.flatten().detach().cpu().numpy() if self.__shm_leaders.rank == 0 else None)
+            itemsize = flat_image.itemsize
         else:
             flat_image = None
+            itemsize = None
 
         win = MPI.Win.Allocate_shared(flat_image.nbytes if self.__shm_comm.rank == 0 else 0,
-                                      flat_image.itemsize if self.__shm_comm.rank == 0 else 0,
+                                      self.__shm_comm.bcast(itemsize),
                                       comm=self.__shm_comm)
         win.Fence()
         buf, itemsize = win.Shared_query(0)
