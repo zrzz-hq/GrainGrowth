@@ -96,8 +96,14 @@ class GrainsSeq:
         return len(self._image_list)
 
     def __getitem__(self, index):
-        return Grains(image = self._image_list[index], 
-                      euler_angle = self._euler_angle_list[index])
+        selected_images = self._image_list[index]
+        selected_euler_angles = self._euler_angle_list[index]
+        if isinstance(selected_images, list):
+            return GrainsSeq(image_list = selected_images,
+                             euler_angle_list = selected_euler_angles)
+
+        return Grains(image = selected_images, 
+                      euler_angle = selected_euler_angles)
     
     def __add__(self, grains: "GrainsSeq"):
         image_list = self._image_list + grains._image_list
