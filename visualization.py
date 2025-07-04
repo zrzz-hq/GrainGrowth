@@ -40,10 +40,7 @@ def _extract_cube_faces(volume_tensor):
     D, H, W = volume_tensor.shape
     return [
         volume_tensor[0,   :, :],   # front
-        volume_tensor[-1,  :, :],   # back
-        volume_tensor[:,   0, :],   # bottom
         volume_tensor[:,  -1, :],   # top
-        volume_tensor[:, :,   0],   # left
         volume_tensor[:, :,  -1],   # right
     ]
 
@@ -75,17 +72,11 @@ def _draw_3d_grains(image, cmap, norm):
         )
 
     # unpack in order
-    front, back, bottom, top, left, right = face_rgbs
+    front, top, right = face_rgbs
 
-    # front/back
-    _plot(front,  X,       Y,       np.zeros_like(X))
-    _plot(back,   X,       Y,       np.ones_like(X))
-    # bottom/top
-    _plot(bottom, X,       np.zeros_like(X), Y)
-    _plot(top,    X,       np.ones_like(X),  Y)
-    # left/right
-    _plot(left,   np.zeros_like(X), X, Y)
-    _plot(right,  np.ones_like(X),  X, Y)
+    _plot(front, X, np.zeros_like(X), Y)
+    _plot(top, X, Y, np.ones_like(X))
+    _plot(right, np.ones_like(X), Y, X)
 
     ax.set_xlim(0,1); ax.set_ylim(0,1); ax.set_zlim(0,1)
     ax.axis('off')
