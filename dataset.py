@@ -69,3 +69,28 @@ def load(file: str, device: torch.device = "cpu"):
         pbar.update(1)
     
     return GrainsDataSet(grains_seq_list)
+
+def scatter_load(file: str):
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    
+    with h5py.File(file, 'r', 'mpio', comm=comm) as f:
+        images_set = f['images']
+        euler_angles_set = f['euler_angles']
+
+        nsets = len(images_set)
+        quot, rem = divmod(nsets, comm.size)
+        nlocal_sets = quot + (1 if comm.rank < rem else 0)
+        disp = comm.rank * quot + min(comm.rank, rem)
+
+        local_images_set = torch.tensor(images_set[disp : disp + nlocal_sets])
+        local_euler_angles_set = torch.tensor(euler_angles_set[disp : disp + nlocal_sets])
+
+        grains_seq_list = []
+        for images, euler_angles in zip(list(local_images_set), list(local_euler_angles_set)):
+            grains_seq_list.append(GrainsSeq(image_list = list(images), euler_angle_list = list(euler_angles)))
+
+        comm.barrier()
+
+        return GrainsDataSet(grains_seq_list)
+        
