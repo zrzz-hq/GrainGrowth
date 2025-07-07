@@ -21,7 +21,6 @@ class GrainsDataSet(Dataset):
     
     def append(self, grains_seq: GrainsSeq):
         self._grains_seq_list.append(grains_seq)
-        
 
 def save(file: str, dataset: GrainsDataSet):
     filepath = Path(file)
@@ -43,33 +42,33 @@ def save(file: str, dataset: GrainsDataSet):
     else:
         raise RuntimeError(f"Unsupported file format {suffix}")
 
-def load(file: str, device: torch.device = "cpu"):
+def _load_grains_seq(images_set: h5py.Dataset, euler_angles_set: h5py.Dataset, index: slice):
+    for i in range(len(images_set))[index]:
+        images = torch.tensor(images_set[i])
+        euler_angles = torch.tensor(euler_angles_set[i])
+        yield GrainsSeq(image_list = list(images), euler_angle_list = list(euler_angles))
 
-    filepath = Path(file)
-    suffix = filepath.suffix
-    if suffix == '.h5':
-        with h5py.File(file, 'r') as f:
-            images_set = np.array(f["images"])
-            euler_angles_set = np.array(f["euler_angles"])
-    elif suffix == '.pickle':
-        with open(file, 'rb') as f:
-            data = pickle.load(file)
-            images_set = data[0]
-            euler_angles_set = data[1]
-    else:
-        raise RuntimeError(f"Unsupported file format {suffix}")
+def load_grains_seq(file: h5py.File):
+    images_set = file["images"]
+    euler_angles_set = file["euler_angles"]
     
-    images_set = torch.from_numpy(images_set).to(device)
-    euler_angles_set = torch.from_numpy(euler_angles_set).to(device)
+    return _load_grains_seq(images_set, euler_angles_set, slice(None, None, None))
 
-    grains_seq_list = []
-    pbar = tqdm(total=len(images_set), desc="Loading dataset")
-    for images, euler_angles in zip(list(images_set), list(euler_angles_set)):
-        grains_seq_list.append(GrainsSeq(image_list = list(images), euler_angle_list = list(euler_angles)))
-        pbar.update(1)
+def load(file: str):
+
+    with h5py.File(file, 'r') as f:
+        images_set = f["images"]
+        euler_angles_set = f["euler_angles"]
+
+        pbar = tqdm(total=len(images_set), desc="Loading")
+        grains_seq_list = []
+        for grains_seq in _load_grains_seq(images_set, euler_angles_set, slice(None, None, None)):
+            grains_seq_list.append(grains_seq)
+            pbar.update(1)
+
+        return GrainsDataSet(grains_seq_list)
+
     
-    return GrainsDataSet(grains_seq_list)
-
 def scatter_load(file: str):
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
@@ -83,14 +82,9 @@ def scatter_load(file: str):
         nlocal_sets = quot + (1 if comm.rank < rem else 0)
         disp = comm.rank * quot + min(comm.rank, rem)
 
-        local_images_set = torch.tensor(images_set[disp : disp + nlocal_sets])
-        local_euler_angles_set = torch.tensor(euler_angles_set[disp : disp + nlocal_sets])
-
         grains_seq_list = []
-        for images, euler_angles in zip(list(local_images_set), list(local_euler_angles_set)):
-            grains_seq_list.append(GrainsSeq(image_list = list(images), euler_angle_list = list(euler_angles)))
-
+        for grains_seq in _load_grains_seq(images_set, euler_angles_set, slice(disp, disp + nlocal_sets, None)):
+            grains_seq_list.append(grains_seq)
         comm.barrier()
 
         return GrainsDataSet(grains_seq_list)
-        
