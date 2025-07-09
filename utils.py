@@ -10,7 +10,7 @@ def pad_unfoldNd(images: torch.Tensor, kernel_size=3, pad_mode='circular') -> to
     if not isinstance(kernel_size, list): 
         kernel_size = [kernel_size] * dims #convert to "list" if it isn't
 
-    pad = tuple(k // 2 for k in kernel_size for _ in range(dims)) #calculate padding needed based on kernel_size
+    pad = tuple(k // 2 for k in kernel_size for _ in range(2)) #calculate padding needed based on kernel_size
 
     if pad_mode == "circular":
         padded_images = f.pad(images.to(dtype=torch.float32), pad, pad_mode) #if "pad_mode"!=list, pad dimensions simultaneously
