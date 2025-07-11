@@ -28,7 +28,7 @@ def _draw_2d_grains(image, cmap, norm):
     Convert a [H, W] integer-label torch.Tensor to a [H, W, 3] uint8 RGB array.
     """
     rgba = cmap(norm(image))        # floats in [0..1], shape (H, W, 4)
-    rgb  = (rgba[..., :3] * 255).astype(np.uint8)
+    rgb  = (rgba * 255).astype(np.uint8)
     return rgb
 
 def _extract_cube_faces(volume_tensor):
@@ -86,7 +86,7 @@ def _draw_3d_grains(image, cmap, norm):
     buf, (w, h) = canvas.print_to_buffer()
     arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, w, 4))
     plt.close(fig)
-    return arr[..., :3]  # drop alpha
+    return arr  # drop alpha
 
 def _draw(image, cmap, norm):
     if image.ndim == 2:
