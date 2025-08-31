@@ -136,7 +136,7 @@ class Grains(GrainsSeq):
     
     @property
     def ngrains(self) -> int:
-        return self._euler_angle_list[0].shape[0] if len(self._image_list) > 0 else 0
+        return len(torch.unique(self._image_list[0])) if len(self._image_list) > 0 else 0
     
     @property
     def shape(self) -> tuple:
