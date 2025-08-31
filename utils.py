@@ -22,12 +22,15 @@ def pad_unfoldNd(images: torch.Tensor, kernel_size=3, pad_mode='circular') -> to
 
     return unfold_images.to(dtype=images.dtype)
 
-def ndifferent_neighbors(unfold_images: torch.Tensor) -> torch.Tensor:  
+def ndifferent_neighbors(unfold_images: torch.Tensor, center_pixels = None) -> torch.Tensor:  
     #ims_unfold - torch tensor of shape = [N, product(kernel_size), dim1*dim2] from [N, 1, dim1, dim2] using "torch.nn.Unfold" object
     #Addtiional dimensions to ims_unfold could be included at the end
     center_index = unfold_images.shape[1] // 2
-    center_pixels = unfold_images[:, center_index:center_index+1, :]
+    if center_pixels is None:
+        center_pixels = unfold_images[:, center_index:center_index+1, :]
+    
     diff_mask = (unfold_images != center_pixels) & (center_pixels != -1)
+    diff_mask[:, center_index, :] = False
     # Count how many are different (along kernel dimension)
     ndiff_neighbors = diff_mask.sum(dim=1)  # [N, L]
     return ndiff_neighbors 
