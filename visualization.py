@@ -99,8 +99,7 @@ def _draw(image, cmap, norm):
     return None
 
 def draw(grains: Grains, color_map='viridis'):
-    ngrains = grains.ngrains
-    cmap, norm = _build_cmap(grains.ngrains - 1, color_map)
+    cmap, norm = _build_cmap(grains.euler_angle.shape[0] - 1, color_map)
     return _draw(grains.image.cpu().numpy(), cmap, norm)
 
 def draw_sequence(grains_seq: GrainsSeq, color_map='viridis', comm = MPI.COMM_WORLD):
