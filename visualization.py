@@ -105,7 +105,8 @@ def draw(grains: Grains, color_map='viridis'):
 def draw_sequence(grains_seq: GrainsSeq, color_map='viridis', comm = MPI.COMM_WORLD):
 
     if comm.rank == 0:
-        ngrains = grains_seq._euler_angle_list[0].shape[0]
+        # ngrains = grains_seq._euler_angle_list[0].shape[0]
+        ngrains = max([grains.ngrains for grains in grains_seq])
         cmap, norm = _build_cmap(ngrains - 1, color_map)
 
         if comm.size == 1:
